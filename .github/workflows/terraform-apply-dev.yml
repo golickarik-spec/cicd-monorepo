@@ -59,5 +59,3 @@ jobs:
           echo "- **Backend URL:** ${{ steps.outputs.outputs.alb_url }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Frontend URL:** ${{ steps.outputs.outputs.cdn_url }}" >> $GITHUB_STEP_SUMMARY
           echo "- **ECR Backend:** ${{ steps.outputs.outputs.ecr_backend }}" >> $GITHUB_STEP_SUMMARY
-
-
