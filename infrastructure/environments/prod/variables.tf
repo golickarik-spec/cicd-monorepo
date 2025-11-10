@@ -81,7 +81,7 @@ variable "rds_instance_class" {
 variable "rds_mysql_version" {
   description = "MySQL version"
   type        = string
-  default     = "8.0.35"
+  default     = "8.0.37"
 }
 
 variable "image_tag" {
