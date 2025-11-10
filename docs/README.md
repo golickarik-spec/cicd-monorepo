@@ -39,6 +39,14 @@ This directory contains comprehensive documentation for deploying infrastructure
    - Rollback procedures
    - Monitoring and validation
 
+5. **[Build and Deploy Pipeline](BUILD_AND_DEPLOY.md)**
+   - Detailed pipeline stages
+   - Build and push backend Docker images
+   - Frontend build and S3 deployment
+   - ECS service updates
+   - CloudFront cache invalidation
+   - Troubleshooting deployments
+
 ## 📖 Quick Navigation
 
 ### I want to...
@@ -49,9 +57,11 @@ This directory contains comprehensive documentation for deploying infrastructure
 | **Configure AWS for GitHub Actions** | [AWS Setup Guide](AWS_SETUP_GUIDE.md) | Steps 1-5 |
 | **Understand the modules** | [Infrastructure README](../infrastructure/README.md) | Modules Overview |
 | **Deploy to dev/staging/prod** | [Deployment Workflow](DEPLOYMENT_WORKFLOW.md) | Deployment Scenarios |
-| **Roll back a deployment** | [Deployment Workflow](DEPLOYMENT_WORKFLOW.md) | Scenario 4 |
+| **Understand the build pipeline** | [Build and Deploy](BUILD_AND_DEPLOY.md) | Pipeline Stages |
+| **Troubleshoot deployment failures** | [Build and Deploy](BUILD_AND_DEPLOY.md) | Troubleshooting |
+| **Roll back a deployment** | [Build and Deploy](BUILD_AND_DEPLOY.md) | Rollback Strategy |
 | **Customize infrastructure** | [Infrastructure README](../infrastructure/README.md) | Environment Configs |
-| **Troubleshoot issues** | [AWS Setup Guide](AWS_SETUP_GUIDE.md) | Troubleshooting |
+| **Troubleshoot AWS setup** | [AWS Setup Guide](AWS_SETUP_GUIDE.md) | Troubleshooting |
 | **Destroy infrastructure** | [Deployment Workflow](DEPLOYMENT_WORKFLOW.md) | Scenario 5 |
 
 ## 🏗️ Architecture
@@ -127,10 +137,19 @@ Reusable infrastructure components:
 Automated deployment pipelines:
 
 - 📋 **terraform-plan.yml**: Preview changes on PRs
-- 🚀 **terraform-apply-dev.yml**: Deploy to dev
-- 🏗️ **terraform-apply-staging.yml**: Deploy to staging
-- 🎯 **terraform-apply-prod.yml**: Deploy to production
+- 🚀 **terraform-apply-dev.yml**: Build & deploy to dev
+- 🏗️ **terraform-apply-staging.yml**: Build & deploy to staging
+- 🎯 **terraform-apply-prod.yml**: Build & deploy to production
 - 💥 **terraform-destroy.yml**: Destroy infrastructure
+
+Each apply workflow now includes:
+1. Infrastructure provisioning (Terraform)
+2. Backend Docker build & ECR push
+3. ECS service update
+4. Frontend build & S3 upload
+5. CloudFront cache invalidation
+
+See [Build and Deploy Guide](BUILD_AND_DEPLOY.md) for details.
 
 ## 📊 Infrastructure Resources
 

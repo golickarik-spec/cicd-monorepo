@@ -210,6 +210,7 @@ Trigger deployments manually via GitHub Actions:
 
 ### Operations
 - [Deployment Workflow](docs/DEPLOYMENT_WORKFLOW.md) - CI/CD pipeline
+- [Build and Deploy Guide](docs/BUILD_AND_DEPLOY.md) - Build & deployment stages
 - [Infrastructure README](infrastructure/README.md) - Terraform details
 - [Backend README](services/backend/README.md) - Backend service
 - [Frontend README](services/frontend/README.md) - Frontend service
@@ -245,12 +246,30 @@ docker-compose up -d
 5. Run tests
 
 ### On Merge to Branch
-1. Checkout code
-2. Configure AWS credentials (OIDC)
-3. Terraform init
-4. Terraform apply
-5. Deploy services
-6. Post deployment summary
+1. **Provision Infrastructure** (Terraform)
+   - Configure AWS credentials (OIDC)
+   - Terraform init & apply
+   - Capture outputs (URLs, repos, etc.)
+
+2. **Build & Deploy Backend**
+   - Login to ECR
+   - Build Docker image
+   - Push to ECR
+   - Force ECS service update
+   - Wait for service to stabilize
+
+3. **Build & Deploy Frontend**
+   - Setup Node.js
+   - Build React app with API URL
+   - Upload to S3 with cache headers
+   - Invalidate CloudFront cache
+
+4. **Post Deployment Summary**
+   - Show URLs and status
+   - Display image tags
+   - Deployment metrics
+
+**For detailed pipeline documentation, see: [Build and Deploy Guide](docs/BUILD_AND_DEPLOY.md)**
 
 ## 🤝 Contributing
 
