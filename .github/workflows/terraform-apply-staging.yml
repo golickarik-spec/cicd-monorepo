@@ -108,7 +108,7 @@ jobs:
         run: |
           cd services/frontend
           echo "Installing dependencies..."
-          npm ci
+          npm install
           
           echo "Building frontend with API URL: $VITE_API_URL"
           npm run build
