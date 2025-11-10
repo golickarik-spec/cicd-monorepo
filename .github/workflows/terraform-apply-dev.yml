@@ -1,0 +1,63 @@
+name: Deploy to Dev
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'infrastructure/**'
+      - '.github/workflows/terraform-*.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # Required for AWS OIDC
+  contents: read
+
+jobs:
+  terraform-apply:
+    runs-on: ubuntu-latest
+    environment: dev
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Init
+        working-directory: infrastructure/environments/dev
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infrastructure/environments/dev
+        env:
+          TF_VAR_mysql_password: ${{ secrets.MYSQL_PASSWORD }}
+          TF_VAR_image_tag: ${{ github.sha }}
+        run: terraform apply -auto-approve
+
+      - name: Get Terraform Outputs
+        id: outputs
+        working-directory: infrastructure/environments/dev
+        run: |
+          echo "alb_url=$(terraform output -raw backend_alb_url)" >> $GITHUB_OUTPUT
+          echo "cdn_url=$(terraform output -raw frontend_cdn_url)" >> $GITHUB_OUTPUT
+          echo "ecr_backend=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
+
+      - name: Deployment Summary
+        run: |
+          echo "## Dev Environment Deployed Successfully! 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend URL:** ${{ steps.outputs.outputs.alb_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend URL:** ${{ steps.outputs.outputs.cdn_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ECR Backend:** ${{ steps.outputs.outputs.ecr_backend }}" >> $GITHUB_STEP_SUMMARY
+
+
