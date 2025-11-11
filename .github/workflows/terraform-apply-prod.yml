@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'infrastructure/**'
+      - 'services/**'
       - '.github/workflows/terraform-*.yml'
   workflow_dispatch:
 
@@ -57,13 +58,105 @@ jobs:
           echo "alb_url=$(terraform output -raw backend_alb_url)" >> $GITHUB_OUTPUT
           echo "cdn_url=$(terraform output -raw frontend_cdn_url)" >> $GITHUB_OUTPUT
           echo "ecr_backend=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
+          echo "s3_bucket=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+          echo "cf_distribution_id=$(terraform output -raw cloudfront_distribution_id)" >> $GITHUB_OUTPUT
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Backend Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: cicd-prod-backend
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building backend Docker image..."
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            ./services/backend
+          
+          echo "Pushing backend image to ECR..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          echo "Backend image pushed successfully!"
+
+      - name: Deploy Backend to ECS
+        run: |
+          echo "Forcing ECS service to deploy new image..."
+          aws ecs update-service \
+            --cluster cicd-prod-cluster \
+            --service cicd-prod-backend \
+            --force-new-deployment \
+            --region ${{ vars.AWS_REGION }}
+          
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster cicd-prod-cluster \
+            --services cicd-prod-backend \
+            --region ${{ vars.AWS_REGION }}
+          
+          echo "Backend deployed successfully!"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Build Frontend
+        env:
+          VITE_API_URL: ${{ steps.outputs.outputs.alb_url }}
+        run: |
+          cd services/frontend
+          echo "Installing dependencies..."
+          npm install
+          
+          echo "Building frontend with API URL: $VITE_API_URL"
+          npm run build
+          
+          echo "Frontend built successfully!"
+
+      - name: Deploy Frontend to S3
+        run: |
+          echo "Uploading frontend to S3..."
+          aws s3 sync services/frontend/dist/ \
+            s3://${{ steps.outputs.outputs.s3_bucket }}/ \
+            --delete \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "index.html"
+          
+          # Upload index.html separately with no-cache
+          aws s3 cp services/frontend/dist/index.html \
+            s3://${{ steps.outputs.outputs.s3_bucket }}/index.html \
+            --cache-control "no-cache, no-store, must-revalidate"
+          
+          echo "Frontend uploaded to S3 successfully!"
+
+      - name: Invalidate CloudFront Cache
+        run: |
+          echo "Invalidating CloudFront cache..."
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ steps.outputs.outputs.cf_distribution_id }} \
+            --paths "/*"
+          
+          echo "CloudFront cache invalidated!"
 
       - name: Deployment Summary
         run: |
           echo "## Production Environment Deployed Successfully! 🚀" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Infrastructure" >> $GITHUB_STEP_SUMMARY
           echo "- **Backend URL:** ${{ steps.outputs.outputs.alb_url }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Frontend URL:** ${{ steps.outputs.outputs.cdn_url }}" >> $GITHUB_STEP_SUMMARY
           echo "- **ECR Backend:** ${{ steps.outputs.outputs.ecr_backend }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Application" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend Image:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **ECS Service:** Deployed and running" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend:** Uploaded to S3" >> $GITHUB_STEP_SUMMARY
+          echo "- **CloudFront:** Cache invalidated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⏱️ **Note:** CloudFront changes may take 5-10 minutes to propagate globally." >> $GITHUB_STEP_SUMMARY
 
 

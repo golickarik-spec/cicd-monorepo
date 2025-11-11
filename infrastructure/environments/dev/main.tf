@@ -12,14 +12,14 @@ terraform {
     }
   }
 
-  # Optional: Configure S3 backend for state management
-  # backend "s3" {
-  #   bucket         = "your-terraform-state-bucket"
-  #   key            = "cicd/dev/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   encrypt        = true
-  #   dynamodb_table = "terraform-state-lock"
-  # }
+  # S3 backend for state management
+  backend "s3" {
+    bucket         = "cicd-terraform-state-835807883333"
+    key            = "cicd/dev/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "terraform-state-lock"
+  }
 }
 
 provider "aws" {
