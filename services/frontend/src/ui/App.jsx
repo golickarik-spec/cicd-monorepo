@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 
+// Use environment variable for API URL, fallback to relative path for local dev
+const API_URL = import.meta.env.VITE_API_URL || ''
+
 function App() {
   const [items, setItems] = useState([])
   const [name, setName] = useState('')
@@ -7,7 +10,7 @@ function App() {
 
   async function fetchItems() {
     setLoading(true)
-    const res = await fetch('/api/items')
+    const res = await fetch(`${API_URL}/api/items`)
     const data = await res.json()
     setItems(data)
     setLoading(false)
@@ -18,7 +21,7 @@ function App() {
   async function addItem(e) {
     e.preventDefault()
     if (!name.trim()) return
-    await fetch('/api/items', {
+    await fetch(`${API_URL}/api/items`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
@@ -28,7 +31,7 @@ function App() {
   }
 
   async function removeItem(id) {
-    await fetch(`/api/items/${id}`, { method: 'DELETE' })
+    await fetch(`${API_URL}/api/items/${id}`, { method: 'DELETE' })
     fetchItems()
   }
 
