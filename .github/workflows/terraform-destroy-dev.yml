@@ -7,6 +7,14 @@ on:
         description: 'Optional: Terraform lock ID to force-unlock before destroy'
         required: false
         type: string
+      cost_only:
+        description: 'Delete only billable resources (RDS, ALB/ECS, NAT/EIP, purge ECR, empty S3). Keep VPC/Subnets/SGs/etc.'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 permissions:
   id-token: write
@@ -163,6 +171,7 @@ jobs:
         run: sleep 5
 
       - name: Terraform Destroy ECS module (release ALB/ENIs/SG deps)
+        if: ${{ inputs.cost_only == 'true' || inputs.cost_only == '' || inputs.cost_only == null || inputs.cost_only == 'false' }}
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
@@ -170,6 +179,7 @@ jobs:
         run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=10m -target=module.ecs
 
       - name: Disable and delete CloudFront distribution explicitly
+        if: ${{ inputs.cost_only == 'false' }}
         run: |
           set -e
           project="${{ steps.discovery.outputs.project_name }}"
@@ -242,6 +252,7 @@ jobs:
           done
 
       - name: Terraform Destroy CloudFront/S3 module (wait for CF deletion)
+        if: ${{ inputs.cost_only == 'false' }}
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
@@ -252,6 +263,7 @@ jobs:
         run: sleep 20
 
       - name: Terraform Destroy RDS module
+        if: ${{ inputs.cost_only == 'true' || inputs.cost_only == '' || inputs.cost_only == null || inputs.cost_only == 'false' }}
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
@@ -259,13 +271,46 @@ jobs:
         run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=10m -target=module.rds
 
       - name: Terraform Destroy ECR module
+        if: ${{ inputs.cost_only == 'false' }}
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
         run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=10m -target=module.ecr
 
+      - name: Delete NAT Gateway and release EIP (cost-only)
+        if: ${{ inputs.cost_only == 'true' || inputs.cost_only == '' || inputs.cost_only == null }}
+        run: |
+          set -e
+          project="${{ steps.discovery.outputs.project_name }}"
+          # Find private route table by tag
+          rtb_id=$(aws ec2 describe-route-tables --filters "Name=tag:Name,Values=${project}-dev-private-rt" --query "RouteTables[0].RouteTableId" --output text 2>/dev/null || echo "None")
+          if [ "$rtb_id" != "None" ]; then
+            echo "Deleting default route (0.0.0.0/0) from $rtb_id"
+            aws ec2 delete-route --route-table-id "$rtb_id" --destination-cidr-block "0.0.0.0/0" || true
+          fi
+          # Locate NAT gateway by tag and delete
+          nat_id=$(aws ec2 describe-nat-gateways --filter "Name=tag:Name,Values=${project}-dev-nat" --query "NatGateways[0].NatGatewayId" --output text 2>/dev/null || echo "None")
+          if [ "$nat_id" != "None" ] && [ "$nat_id" != "null" ]; then
+            echo "Deleting NAT Gateway $nat_id"
+            aws ec2 delete-nat-gateway --nat-gateway-id "$nat_id" || true
+            # Wait for deletion
+            for i in {1..60}; do
+              sleep 10
+              state=$(aws ec2 describe-nat-gateways --nat-gateway-ids "$nat_id" --query "NatGateways[0].State" --output text 2>/dev/null || echo "deleted")
+              echo "NAT state: $state"
+              [ "$state" = "deleted" ] && break
+            done
+          fi
+          # Release NAT EIP
+          alloc_id=$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=${project}-dev-nat-eip" --query "Addresses[0].AllocationId" --output text 2>/dev/null || echo "None")
+          if [ "$alloc_id" != "None" ] && [ "$alloc_id" != "null" ]; then
+            echo "Releasing EIP $alloc_id"
+            aws ec2 release-address --allocation-id "$alloc_id" || true
+          fi
+
       - name: Terraform Destroy remaining resources (networking, security, etc.)
+        if: ${{ inputs.cost_only == 'false' }}
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
