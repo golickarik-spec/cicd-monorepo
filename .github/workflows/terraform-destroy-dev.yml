@@ -39,7 +39,7 @@ jobs:
       - name: Force-unlock Terraform state (optional)
         if: ${{ inputs.force_unlock_id != '' }}
         working-directory: infrastructure/environments/dev
-        run: terraform force-unlock -force "${{ inputs.force_unlock_id }}"
+        run: terraform force-unlock -force "${{ inputs.force_unlock_id }}" || true
 
       - name: Read Terraform Outputs (bucket and repos)
         id: tf_outputs
@@ -121,14 +121,14 @@ jobs:
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
-        run: terraform destroy -auto-approve -input=false -lock-timeout=10m -target=module.ecs
+        run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=10m -target=module.ecs
 
       - name: Terraform Destroy CloudFront/S3 module (wait for CF deletion)
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
-        run: terraform destroy -auto-approve -input=false -lock-timeout=30m -target=module.s3_cloudfront
+        run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=30m -target=module.s3_cloudfront
 
       - name: Pause briefly after CloudFront deletion
         run: sleep 20
@@ -138,21 +138,21 @@ jobs:
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
-        run: terraform destroy -auto-approve -input=false -lock-timeout=10m -target=module.rds
+        run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=10m -target=module.rds
 
       - name: Terraform Destroy ECR module
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
-        run: terraform destroy -auto-approve -input=false -lock-timeout=10m -target=module.ecr
+        run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=10m -target=module.ecr
 
       - name: Terraform Destroy remaining resources (networking, security, etc.)
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
-        run: terraform destroy -auto-approve -input=false -lock-timeout=15m
+        run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=15m
 
       - name: Destruction Summary
         run: |
