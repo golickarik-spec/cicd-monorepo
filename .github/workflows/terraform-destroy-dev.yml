@@ -169,6 +169,78 @@ jobs:
           TF_VAR_image_tag: "latest"
         run: terraform destroy -auto-approve -input=false -lock=false -lock-timeout=10m -target=module.ecs
 
+      - name: Disable and delete CloudFront distribution explicitly
+        run: |
+          set -e
+          project="${{ steps.discovery.outputs.project_name }}"
+          bucket="${{ steps.discovery.outputs.bucket }}"
+          dist_id=""
+          items_json=$(aws cloudfront list-distributions --output json || echo '{}')
+          echo "$items_json" | jq -e '.DistributionList.Items' >/dev/null 2>&1 || { echo "No CloudFront distributions found."; exit 0; }
+          for row in $(echo "$items_json" | jq -c '.DistributionList.Items[]'); do
+            id=$(echo "$row" | jq -r '.Id')
+            arn=$(echo "$row" | jq -r '.ARN // empty')
+            if [ -z "$arn" ]; then
+              arn=$(aws cloudfront get-distribution --id "$id" --output json | jq -r '.Distribution.ARN')
+            fi
+            # Try match by Name tag
+            if [ -n "$project" ]; then
+              tags_json=$(aws cloudfront list-tags-for-resource --resource "$arn" --output json 2>/dev/null || echo '{}')
+              name_tag=$(echo "$tags_json" | jq -r '.Tags.Items[]? | select(.Key=="Name") | .Value' | head -n1)
+              if [ "$name_tag" = "${project}-cdn" ]; then
+                dist_id="$id"
+                break
+              fi
+            fi
+            # Fallback: match by origin domain referencing bucket
+            if [ -n "$bucket" ]; then
+              has_origin=$(echo "$row" | jq --arg b "$bucket" -r '.Origins.Items[]? | select(.DomainName | contains($b)) | .DomainName' | head -n1)
+              if [ -n "$has_origin" ]; then
+                dist_id="$id"
+                break
+              fi
+            fi
+          done
+          if [ -z "$dist_id" ]; then
+            echo "No matching CloudFront distribution found. Continuing..."
+            exit 0
+          fi
+          echo "Found CloudFront distribution: $dist_id"
+          # Fetch config and ETag
+          etag=$(aws cloudfront get-distribution-config --id "$dist_id" --query 'ETag' --output text)
+          cfg=$(aws cloudfront get-distribution-config --id "$dist_id" --output json | jq '.DistributionConfig')
+          enabled=$(echo "$cfg" | jq -r '.Enabled')
+          if [ "$enabled" != "false" ]; then
+            echo "Disabling distribution $dist_id"
+            new_cfg=$(echo "$cfg" | jq '.Enabled=false')
+            echo "$new_cfg" > cf-config.json
+            aws cloudfront update-distribution --id "$dist_id" --if-match "$etag" --distribution-config file://cf-config.json >/dev/null
+            # Wait until Deployed and Enabled=false
+            for i in {1..90}; do
+              sleep 10
+              st=$(aws cloudfront get-distribution --id "$dist_id" --output json | jq -r '.Distribution.Status' || echo "Unknown")
+              en=$(aws cloudfront get-distribution --id "$dist_id" --output json | jq -r '.Distribution.DistributionConfig.Enabled' || echo "Unknown")
+              echo "Status: $st, Enabled: $en"
+              if [ "$st" = "Deployed" ] && [ "$en" = "false" ]; then
+                break
+              fi
+            done
+          fi
+          # Delete distribution
+          etag=$(aws cloudfront get-distribution-config --id "$dist_id" --query 'ETag' --output text)
+          echo "Deleting distribution $dist_id"
+          aws cloudfront delete-distribution --id "$dist_id" --if-match "$etag" || true
+          # Wait until deletion completes
+          for i in {1..180}; do
+            sleep 10
+            if ! aws cloudfront get-distribution --id "$dist_id" >/dev/null 2>&1; then
+              echo "Distribution $dist_id deleted."
+              break
+            else
+              echo "Waiting for distribution deletion..."
+            fi
+          done
+
       - name: Terraform Destroy CloudFront/S3 module (wait for CF deletion)
         working-directory: infrastructure/environments/dev
         env:
