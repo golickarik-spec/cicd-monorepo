@@ -2,6 +2,11 @@ name: Destroy Dev Environment
 
 on:
   workflow_dispatch:
+    inputs:
+      force_unlock_id:
+        description: 'Optional: Terraform lock ID to force-unlock before destroy'
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -30,6 +35,11 @@ jobs:
       - name: Terraform Init
         working-directory: infrastructure/environments/dev
         run: terraform init -input=false
+
+      - name: Force-unlock Terraform state (optional)
+        if: ${{ inputs.force_unlock_id != '' }}
+        working-directory: infrastructure/environments/dev
+        run: terraform force-unlock -force "${{ inputs.force_unlock_id }}"
 
       - name: Read Terraform Outputs (bucket and repos)
         id: tf_outputs
@@ -111,7 +121,7 @@ jobs:
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
-        run: terraform destroy -auto-approve -input=false
+        run: terraform destroy -auto-approve -input=false -lock-timeout=5m
 
       - name: Destruction Summary
         run: |
