@@ -42,8 +42,8 @@ jobs:
       - name: Derive ECR repo names
         id: ecr_names
         run: |
-          backend_repo="${{ steps.tf_outputs.outputs.ecr_backend_url##*/ }}"
-          frontend_repo="${{ steps.tf_outputs.outputs.ecr_frontend_url##*/ }}"
+          backend_repo="$(basename "${{ steps.tf_outputs.outputs.ecr_backend_url }}")"
+          frontend_repo="$(basename "${{ steps.tf_outputs.outputs.ecr_frontend_url }}")"
           echo "backend_repo=$backend_repo" >> $GITHUB_OUTPUT
           echo "frontend_repo=$frontend_repo" >> $GITHUB_OUTPUT
 
