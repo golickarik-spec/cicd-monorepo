@@ -1,0 +1,87 @@
+name: Destroy Dev Environment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Init
+        working-directory: infrastructure/environments/dev
+        run: terraform init -input=false
+
+      - name: Read Terraform Outputs (bucket and repos)
+        id: tf_outputs
+        working-directory: infrastructure/environments/dev
+        run: |
+          echo "bucket=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+          echo "ecr_backend_url=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
+          echo "ecr_frontend_url=$(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_OUTPUT
+
+      - name: Derive ECR repo names
+        id: ecr_names
+        run: |
+          backend_repo="${{ steps.tf_outputs.outputs.ecr_backend_url##*/ }}"
+          frontend_repo="${{ steps.tf_outputs.outputs.ecr_frontend_url##*/ }}"
+          echo "backend_repo=$backend_repo" >> $GITHUB_OUTPUT
+          echo "frontend_repo=$frontend_repo" >> $GITHUB_OUTPUT
+
+      - name: Empty S3 bucket (required for deletion)
+        run: |
+          aws s3 rm "s3://${{ steps.tf_outputs.outputs.bucket }}" --recursive || true
+
+      - name: Delete all images from ECR repos
+        run: |
+          set -e
+          for repo in "${{ steps.ecr_names.outputs.backend_repo }}" "${{ steps.ecr_names.outputs.frontend_repo }}"; do
+            echo "Purging images in repo: $repo"
+            digests=$(aws ecr list-images --repository-name "$repo" --query 'imageIds[].imageDigest' --output text || true)
+            if [ -n "$digests" ]; then
+              for d in $digests; do
+                aws ecr batch-delete-image --repository-name "$repo" --image-ids imageDigest="$d" || true
+              done
+            else
+              echo "No images found in $repo"
+            fi
+          done
+
+      - name: Terraform Destroy (dev)
+        working-directory: infrastructure/environments/dev
+        env:
+          TF_VAR_mysql_password: "placeholder"
+          TF_VAR_image_tag: "latest"
+        run: terraform destroy -auto-approve -input=false
+
+      - name: Destruction Summary
+        run: |
+          echo "## Dev Environment Destroyed ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deleted Resources" >> $GITHUB_STEP_SUMMARY
+          echo "- S3 bucket: \`${{ steps.tf_outputs.outputs.bucket }}\` (emptied, then removed by Terraform)" >> $GITHUB_STEP_SUMMARY
+          echo "- ECR repos: \`${{ steps.ecr_names.outputs.backend_repo }}\`, \`${{ steps.ecr_names.outputs.frontend_repo }}\` (images purged, repos removed by Terraform)" >> $GITHUB_STEP_SUMMARY
+          echo "- ECS, ALB, VPC, Subnets, Security Groups, RDS, CloudFront: removed by Terraform" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⏱️ Note: CloudFront distribution deletions can take several minutes to finalize." >> $GITHUB_STEP_SUMMARY
+
+
