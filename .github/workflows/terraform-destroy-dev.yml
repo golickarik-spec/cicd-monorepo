@@ -116,12 +116,43 @@ jobs:
       - name: Wait a moment for eventual consistency
         run: sleep 5
 
-      - name: Terraform Destroy (dev)
+      - name: Terraform Destroy ECS module (release ALB/ENIs/SG deps)
         working-directory: infrastructure/environments/dev
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
-        run: terraform destroy -auto-approve -input=false -lock-timeout=5m
+        run: terraform destroy -auto-approve -input=false -lock-timeout=10m -target=module.ecs
+
+      - name: Terraform Destroy CloudFront/S3 module (wait for CF deletion)
+        working-directory: infrastructure/environments/dev
+        env:
+          TF_VAR_mysql_password: "placeholder"
+          TF_VAR_image_tag: "latest"
+        run: terraform destroy -auto-approve -input=false -lock-timeout=30m -target=module.s3_cloudfront
+
+      - name: Pause briefly after CloudFront deletion
+        run: sleep 20
+
+      - name: Terraform Destroy RDS module
+        working-directory: infrastructure/environments/dev
+        env:
+          TF_VAR_mysql_password: "placeholder"
+          TF_VAR_image_tag: "latest"
+        run: terraform destroy -auto-approve -input=false -lock-timeout=10m -target=module.rds
+
+      - name: Terraform Destroy ECR module
+        working-directory: infrastructure/environments/dev
+        env:
+          TF_VAR_mysql_password: "placeholder"
+          TF_VAR_image_tag: "latest"
+        run: terraform destroy -auto-approve -input=false -lock-timeout=10m -target=module.ecr
+
+      - name: Terraform Destroy remaining resources (networking, security, etc.)
+        working-directory: infrastructure/environments/dev
+        env:
+          TF_VAR_mysql_password: "placeholder"
+          TF_VAR_image_tag: "latest"
+        run: terraform destroy -auto-approve -input=false -lock-timeout=15m
 
       - name: Destruction Summary
         run: |
