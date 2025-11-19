@@ -41,25 +41,71 @@ jobs:
         working-directory: infrastructure/environments/dev
         run: terraform force-unlock -force "${{ inputs.force_unlock_id }}" || true
 
-      - name: Read Terraform Outputs (bucket and repos)
-        id: tf_outputs
-        working-directory: infrastructure/environments/dev
+      - name: Discover S3 bucket and project name (by resource tags)
+        id: discovery
         run: |
-          echo "bucket=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
-          echo "ecr_backend_url=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
-          echo "ecr_frontend_url=$(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_OUTPUT
+          set -e
+          found_bucket=""
+          project=""
+          # Find S3 bucket tagged as dev frontend and capture project tag
+          for b in $(aws s3api list-buckets --query 'Buckets[].Name' --output text); do
+            tags_json=$(aws s3api get-bucket-tagging --bucket "$b" --output json 2>/dev/null || echo '{}')
+            env_tag=$(echo "$tags_json" | jq -r '.TagSet[]? | select(.Key=="Environment") | .Value' | head -n1)
+            name_tag=$(echo "$tags_json" | jq -r '.TagSet[]? | select(.Key=="Name") | .Value' | head -n1)
+            proj_tag=$(echo "$tags_json" | jq -r '.TagSet[]? | select(.Key=="Project") | .Value' | head -n1)
+            if [ "$env_tag" = "dev" ] && [ -n "$proj_tag" ] && [ "$name_tag" = "${proj_tag}-dev-frontend" ]; then
+              found_bucket="$b"
+              project="$proj_tag"
+              break
+            fi
+          done
+          if [ -z "$found_bucket" ]; then
+            echo "No tagged dev frontend bucket found; attempting pattern match..." >&2
+            for b in $(aws s3api list-buckets --query 'Buckets[].Name' --output text); do
+              case "$b" in
+                *-dev-frontend)
+                  tags_json=$(aws s3api get-bucket-tagging --bucket "$b" --output json 2>/dev/null || echo '{}')
+                  proj_tag=$(echo "$tags_json" | jq -r '.TagSet[]? | select(.Key=="Project") | .Value' | head -n1)
+                  project="${proj_tag:-cicd}"
+                  found_bucket="$b"
+                  break
+                  ;;
+              esac
+            done
+          fi
+          if [ -n "$found_bucket" ]; then
+            echo "bucket=$found_bucket" >> $GITHUB_OUTPUT
+          fi
+          if [ -n "$project" ]; then
+            echo "project_name=$project" >> $GITHUB_OUTPUT
+          fi
 
       - name: Derive ECR repo names
         id: ecr_names
         run: |
-          backend_repo="$(basename "${{ steps.tf_outputs.outputs.ecr_backend_url }}")"
-          frontend_repo="$(basename "${{ steps.tf_outputs.outputs.ecr_frontend_url }}")"
+          project="${{ steps.discovery.outputs.project_name }}"
+          backend_repo=""
+          frontend_repo=""
+          if [ -n "$project" ]; then
+            backend_repo="${project}-dev-backend"
+            frontend_repo="${project}-dev-frontend"
+          fi
+          # Fallback: discover by name pattern if project not found
+          if [ -z "$backend_repo" ] || [ -z "$frontend_repo" ]; then
+            repos=$(aws ecr describe-repositories --query 'repositories[].repositoryName' --output text || true)
+            for r in $repos; do
+              case "$r" in
+                *-dev-backend) backend_repo="$r" ;;
+                *-dev-frontend) frontend_repo="$r" ;;
+              esac
+            done
+          fi
           echo "backend_repo=$backend_repo" >> $GITHUB_OUTPUT
           echo "frontend_repo=$frontend_repo" >> $GITHUB_OUTPUT
 
       - name: Empty S3 bucket (required for deletion)
         run: |
-          bucket="${{ steps.tf_outputs.outputs.bucket }}"
+          bucket="${{ steps.discovery.outputs.bucket }}"
           echo "Emptying S3 bucket: $bucket"
           versioning_status=$(aws s3api get-bucket-versioning --bucket "$bucket" --query 'Status' --output text 2>/dev/null || true)
           if [ "$versioning_status" = "Enabled" ] || [ "$versioning_status" = "Suspended" ]; then
