@@ -1,4 +1,4 @@
-name: Destroy Dev Environment
+name: Destroy Staging Environment
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ permissions:
 jobs:
   terraform-destroy:
     runs-on: ubuntu-latest
-    environment: dev
+    environment: staging
 
     steps:
       - name: Checkout Code
@@ -41,12 +41,12 @@ jobs:
           terraform_version: 1.5.0
 
       - name: Terraform Init
-        working-directory: infrastructure/environments/dev
+        working-directory: infrastructure/environments/staging
         run: terraform init -input=false
 
       - name: Force-unlock Terraform state (optional)
         if: ${{ inputs.force_unlock_id != '' }}
-        working-directory: infrastructure/environments/dev
+        working-directory: infrastructure/environments/staging
         run: terraform force-unlock -force "${{ inputs.force_unlock_id }}" || true
 
       - name: Discover S3 bucket and project name (by resource tags)
@@ -55,23 +55,23 @@ jobs:
           set -e
           found_bucket=""
           project=""
-          # Find S3 bucket tagged as dev frontend and capture project tag
+          # Find S3 bucket tagged as staging frontend and capture project tag
           for b in $(aws s3api list-buckets --query 'Buckets[].Name' --output text); do
             tags_json=$(aws s3api get-bucket-tagging --bucket "$b" --output json 2>/dev/null || echo '{}')
             env_tag=$(echo "$tags_json" | jq -r '.TagSet[]? | select(.Key=="Environment") | .Value' | head -n1)
             name_tag=$(echo "$tags_json" | jq -r '.TagSet[]? | select(.Key=="Name") | .Value' | head -n1)
             proj_tag=$(echo "$tags_json" | jq -r '.TagSet[]? | select(.Key=="Project") | .Value' | head -n1)
-            if [ "$env_tag" = "dev" ] && [ -n "$proj_tag" ] && [ "$name_tag" = "${proj_tag}-dev-frontend" ]; then
+            if [ "$env_tag" = "staging" ] && [ -n "$proj_tag" ] && [ "$name_tag" = "${proj_tag}-staging-frontend" ]; then
               found_bucket="$b"
               project="$proj_tag"
               break
             fi
           done
           if [ -z "$found_bucket" ]; then
-            echo "No tagged dev frontend bucket found; attempting pattern match..." >&2
+            echo "No tagged staging frontend bucket found; attempting pattern match..." >&2
             for b in $(aws s3api list-buckets --query 'Buckets[].Name' --output text); do
               case "$b" in
-                *-dev-frontend)
+                *-staging-frontend)
                   tags_json=$(aws s3api get-bucket-tagging --bucket "$b" --output json 2>/dev/null || echo '{}')
                   proj_tag=$(echo "$tags_json" | jq -r '.TagSet[]? | select(.Key=="Project") | .Value' | head -n1)
                   project="${proj_tag:-cicd}"
@@ -95,16 +95,16 @@ jobs:
           backend_repo=""
           frontend_repo=""
           if [ -n "$project" ]; then
-            backend_repo="${project}-dev-backend"
-            frontend_repo="${project}-dev-frontend"
+            backend_repo="${project}-staging-backend"
+            frontend_repo="${project}-staging-frontend"
           fi
           # Fallback: discover by name pattern if project not found
           if [ -z "$backend_repo" ] || [ -z "$frontend_repo" ]; then
             repos=$(aws ecr describe-repositories --query 'repositories[].repositoryName' --output text || true)
             for r in $repos; do
               case "$r" in
-                *-dev-backend) backend_repo="$r" ;;
-                *-dev-frontend) frontend_repo="$r" ;;
+                *-staging-backend) backend_repo="$r" ;;
+                *-staging-frontend) frontend_repo="$r" ;;
               esac
             done
           fi
@@ -172,7 +172,7 @@ jobs:
 
       - name: Terraform Destroy ECS module (release ALB/ENIs/SG deps)
         if: ${{ inputs.cost_only == 'true' || inputs.cost_only == '' || inputs.cost_only == null || inputs.cost_only == 'false' }}
-        working-directory: infrastructure/environments/dev
+        working-directory: infrastructure/environments/staging
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
@@ -193,11 +193,11 @@ jobs:
             if [ -z "$arn" ]; then
               arn=$(aws cloudfront get-distribution --id "$id" --output json | jq -r '.Distribution.ARN')
             fi
-            # Try match by Name tag
+            # Try match by Name tag (project-env-cdn or project-cdn)
             if [ -n "$project" ]; then
               tags_json=$(aws cloudfront list-tags-for-resource --resource "$arn" --output json 2>/dev/null || echo '{}')
               name_tag=$(echo "$tags_json" | jq -r '.Tags.Items[]? | select(.Key=="Name") | .Value' | head -n1)
-              if [ "$name_tag" = "${project}-cdn" ]; then
+              if [ "$name_tag" = "${project}-staging-cdn" ] || [ "$name_tag" = "${project}-cdn" ]; then
                 dist_id="$id"
                 break
               fi
@@ -224,7 +224,8 @@ jobs:
             echo "Disabling distribution $dist_id"
             new_cfg=$(echo "$cfg" | jq '.Enabled=false')
             echo "$new_cfg" > cf-config.json
-            aws cloudfront update-distribution --id "$dist_id" --if-match "$etag" --distribution-config file://cf-config.json >/dev/null
+            aws cloudfront update-distribution --id "$dist_id" --if-match "$etag" --distribution-config file://cf-config.json >/devnull 2>&1 || \
+            aws cloudfront update-distribution --id "$dist_id" --if-match "$etag" --distribution-config file://cf-config.json
             # Wait until Deployed and Enabled=false
             for i in {1..90}; do
               sleep 10
@@ -253,7 +254,7 @@ jobs:
 
       - name: Terraform Destroy CloudFront/S3 module (wait for CF deletion)
         if: ${{ inputs.cost_only == 'false' }}
-        working-directory: infrastructure/environments/dev
+        working-directory: infrastructure/environments/staging
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
@@ -264,7 +265,7 @@ jobs:
 
       - name: Terraform Destroy RDS module
         if: ${{ inputs.cost_only == 'true' || inputs.cost_only == '' || inputs.cost_only == null || inputs.cost_only == 'false' }}
-        working-directory: infrastructure/environments/dev
+        working-directory: infrastructure/environments/staging
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
@@ -272,7 +273,7 @@ jobs:
 
       - name: Terraform Destroy ECR module
         if: ${{ inputs.cost_only == 'false' }}
-        working-directory: infrastructure/environments/dev
+        working-directory: infrastructure/environments/staging
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
@@ -284,13 +285,13 @@ jobs:
           set -e
           project="${{ steps.discovery.outputs.project_name }}"
           # Find private route table by tag
-          rtb_id=$(aws ec2 describe-route-tables --filters "Name=tag:Name,Values=${project}-dev-private-rt" --query "RouteTables[0].RouteTableId" --output text 2>/dev/null || echo "None")
+          rtb_id=$(aws ec2 describe-route-tables --filters "Name=tag:Name,Values=${project}-staging-private-rt" --query "RouteTables[0].RouteTableId" --output text 2>/dev/null || echo "None")
           if [ "$rtb_id" != "None" ]; then
             echo "Deleting default route (0.0.0.0/0) from $rtb_id"
             aws ec2 delete-route --route-table-id "$rtb_id" --destination-cidr-block "0.0.0.0/0" || true
           fi
           # Locate NAT gateway by tag and delete
-          nat_id=$(aws ec2 describe-nat-gateways --filter "Name=tag:Name,Values=${project}-dev-nat" --query "NatGateways[0].NatGatewayId" --output text 2>/dev/null || echo "None")
+          nat_id=$(aws ec2 describe-nat-gateways --filter "Name=tag:Name,Values=${project}-staging-nat" --query "NatGateways[0].NatGatewayId" --output text 2>/dev/null || echo "None")
           if [ "$nat_id" != "None" ] && [ "$nat_id" != "null" ]; then
             echo "Deleting NAT Gateway $nat_id"
             aws ec2 delete-nat-gateway --nat-gateway-id "$nat_id" || true
@@ -303,7 +304,7 @@ jobs:
             done
           fi
           # Release NAT EIP
-          alloc_id=$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=${project}-dev-nat-eip" --query "Addresses[0].AllocationId" --output text 2>/dev/null || echo "None")
+          alloc_id=$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=${project}-staging-nat-eip" --query "Addresses[0].AllocationId" --output text 2>/dev/null || echo "None")
           if [ "$alloc_id" != "None" ] && [ "$alloc_id" != "null" ]; then
             echo "Releasing EIP $alloc_id"
             aws ec2 release-address --allocation-id "$alloc_id" || true
@@ -311,7 +312,7 @@ jobs:
 
       - name: Terraform Destroy remaining resources (networking, security, etc.)
         if: ${{ inputs.cost_only == 'false' }}
-        working-directory: infrastructure/environments/dev
+        working-directory: infrastructure/environments/staging
         env:
           TF_VAR_mysql_password: "placeholder"
           TF_VAR_image_tag: "latest"
@@ -319,7 +320,7 @@ jobs:
 
       - name: Destruction Summary
         run: |
-          echo "## Dev Environment Destroyed ✅" >> $GITHUB_STEP_SUMMARY
+          echo "## Staging Environment Destroyed ✅" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Deleted Resources" >> $GITHUB_STEP_SUMMARY
           echo "- S3 bucket emptied: \`${{ steps.discovery.outputs.bucket }}\`" >> $GITHUB_STEP_SUMMARY
