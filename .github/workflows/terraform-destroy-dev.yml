@@ -1,0 +1,127 @@
+name: Destroy Dev Environment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Init
+        working-directory: infrastructure/environments/dev
+        run: terraform init -input=false
+
+      - name: Read Terraform Outputs (bucket and repos)
+        id: tf_outputs
+        working-directory: infrastructure/environments/dev
+        run: |
+          echo "bucket=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+          echo "ecr_backend_url=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
+          echo "ecr_frontend_url=$(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_OUTPUT
+
+      - name: Derive ECR repo names
+        id: ecr_names
+        run: |
+          backend_repo="$(basename "${{ steps.tf_outputs.outputs.ecr_backend_url }}")"
+          frontend_repo="$(basename "${{ steps.tf_outputs.outputs.ecr_frontend_url }}")"
+          echo "backend_repo=$backend_repo" >> $GITHUB_OUTPUT
+          echo "frontend_repo=$frontend_repo" >> $GITHUB_OUTPUT
+
+      - name: Empty S3 bucket (required for deletion)
+        run: |
+          bucket="${{ steps.tf_outputs.outputs.bucket }}"
+          echo "Emptying S3 bucket: $bucket"
+          versioning_status=$(aws s3api get-bucket-versioning --bucket "$bucket" --query 'Status' --output text 2>/dev/null || true)
+          if [ "$versioning_status" = "Enabled" ] || [ "$versioning_status" = "Suspended" ]; then
+            echo "Bucket has versioning ($versioning_status). Deleting all versions and delete markers..."
+            aws s3api list-object-versions --bucket "$bucket" --output json \
+              | jq -c '.Versions[]? | {Key, VersionId}' \
+              | while read -r obj; do
+                  key=$(echo "$obj" | jq -r .Key)
+                  vid=$(echo "$obj" | jq -r .VersionId)
+                  aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$vid" || true
+                done
+            aws s3api list-object-versions --bucket "$bucket" --output json \
+              | jq -c '.DeleteMarkers[]? | {Key, VersionId}' \
+              | while read -r obj; do
+                  key=$(echo "$obj" | jq -r .Key)
+                  vid=$(echo "$obj" | jq -r .VersionId)
+                  aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$vid" || true
+                done
+          else
+            echo "Bucket not versioned. Removing recursively..."
+            aws s3 rm "s3://$bucket" --recursive || true
+          fi
+
+      - name: Delete all images from ECR repos
+        run: |
+          set -e
+          for repo in "${{ steps.ecr_names.outputs.backend_repo }}" "${{ steps.ecr_names.outputs.frontend_repo }}"; do
+            echo "Purging all images in ECR repo: $repo"
+            # Loop until no images remain (handles pagination, tagged and untagged)
+            while true; do
+              images_json=$(aws ecr list-images --repository-name "$repo" --filter tagStatus=ANY --output json --no-paginate || echo '{}')
+              count=$(echo "$images_json" | jq '.imageIds | length' 2>/dev/null || echo 0)
+              if [ "$count" -eq 0 ]; then
+                echo "Repository $repo is empty."
+                break
+              fi
+              echo "Deleting $count images from $repo..."
+              echo "$images_json" | jq -c '.imageIds[]' | while read -r img; do
+                digest=$(echo "$img" | jq -r '.imageDigest // empty')
+                tag=$(echo "$img" | jq -r '.imageTag // empty')
+                if [ -n "$digest" ] && [ -n "$tag" ]; then
+                  aws ecr batch-delete-image --repository-name "$repo" --image-ids imageDigest="$digest",imageTag="$tag" || true
+                elif [ -n "$digest" ]; then
+                  aws ecr batch-delete-image --repository-name "$repo" --image-ids imageDigest="$digest" || true
+                elif [ -n "$tag" ]; then
+                  aws ecr batch-delete-image --repository-name "$repo" --image-ids imageTag="$tag" || true
+                fi
+              done
+              # Short pause to allow registry to reflect deletions
+              sleep 2
+            done
+          done
+
+      - name: Wait a moment for eventual consistency
+        run: sleep 5
+
+      - name: Terraform Destroy (dev)
+        working-directory: infrastructure/environments/dev
+        env:
+          TF_VAR_mysql_password: "placeholder"
+          TF_VAR_image_tag: "latest"
+        run: terraform destroy -auto-approve -input=false
+
+      - name: Destruction Summary
+        run: |
+          echo "## Dev Environment Destroyed ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deleted Resources" >> $GITHUB_STEP_SUMMARY
+          echo "- S3 bucket: \`${{ steps.tf_outputs.outputs.bucket }}\` (emptied, then removed by Terraform)" >> $GITHUB_STEP_SUMMARY
+          echo "- ECR repos: \`${{ steps.ecr_names.outputs.backend_repo }}\`, \`${{ steps.ecr_names.outputs.frontend_repo }}\` (images purged, repos removed by Terraform)" >> $GITHUB_STEP_SUMMARY
+          echo "- ECS, ALB, VPC, Subnets, Security Groups, RDS, CloudFront: removed by Terraform" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⏱️ Note: CloudFront distribution deletions can take several minutes to finalize." >> $GITHUB_STEP_SUMMARY
+
+

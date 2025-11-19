@@ -29,6 +29,27 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Backend Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: cicd-dev-backend
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building backend Docker image..."
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            ./services/backend
+          
+          echo "Pushing backend image to ECR..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          echo "✅ Backend image pushed successfully!"
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -54,44 +75,6 @@ jobs:
           echo "ecr_backend=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
           echo "s3_bucket=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
           echo "cf_distribution_id=$(terraform output -raw cloudfront_distribution_id)" >> $GITHUB_OUTPUT
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and Push Backend Image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: cicd-dev-backend
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          echo "Building backend Docker image..."
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            ./services/backend
-          
-          echo "Pushing backend image to ECR..."
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          
-          echo "Backend image pushed successfully!"
-
-      - name: Deploy Backend to ECS
-        run: |
-          echo "Forcing ECS service to deploy new image..."
-          aws ecs update-service \
-            --cluster cicd-dev-cluster \
-            --service cicd-dev-backend \
-            --force-new-deployment \
-            --region ${{ vars.AWS_REGION }}
-          
-          echo "Waiting for ECS service to stabilize..."
-          aws ecs wait services-stable \
-            --cluster cicd-dev-cluster \
-            --services cicd-dev-backend \
-            --region ${{ vars.AWS_REGION }}
-          
-          echo "Backend deployed successfully!"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
